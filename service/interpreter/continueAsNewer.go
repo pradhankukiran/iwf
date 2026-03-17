@@ -172,6 +172,7 @@ func (c *ContinueAsNewer) AddPotentialStateExecutionToResume(
 	commandRequest iwfidl.CommandRequest,
 	completedTimerCommands map[int]service.InternalTimerStatus,
 	completedSignalCommands, completedInterStateChannelCommands map[int]*iwfidl.EncodedObject,
+	completedInterStateChannelMultiCmds map[int][]*iwfidl.EncodedObject,
 ) {
 	c.StateExecutionToResumeMap[stateExecutionId] = service.StateExecutionResumeInfo{
 		StateExecutionId:     stateExecutionId,
@@ -179,9 +180,10 @@ func (c *ContinueAsNewer) AddPotentialStateExecutionToResume(
 		StateExecutionLocals: stateExecLocals,
 		CommandRequest:       commandRequest,
 		StateExecutionCompletedCommands: service.StateExecutionCompletedCommands{
-			CompletedTimerCommands:             completedTimerCommands,
-			CompletedSignalCommands:            completedSignalCommands,
-			CompletedInterStateChannelCommands: completedInterStateChannelCommands,
+			CompletedTimerCommands:              completedTimerCommands,
+			CompletedSignalCommands:             completedSignalCommands,
+			CompletedInterStateChannelCommands:  completedInterStateChannelCommands,
+			CompletedInterStateChannelMultiCmds: completedInterStateChannelMultiCmds,
 		},
 	}
 }

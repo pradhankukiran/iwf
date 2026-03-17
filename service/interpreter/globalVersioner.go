@@ -40,7 +40,12 @@ const SyncUpdateRPCUseLocalActivity = 9
 // This ensures that commands don't get lost during continueAsNew operations.
 const StartingVersionWaitingCommandThreads = 10
 
-const MaxOfAllVersions = StartingVersionWaitingCommandThreads
+// StartingVersionChannelConsumeN supports consuming N messages from a channel in one command
+// via AtLeast/AtMost fields on InterStateChannelCommand.
+// See: https://github.com/indeedeng/iwf/issues/301
+const StartingVersionChannelConsumeN = 11
+
+const MaxOfAllVersions = StartingVersionChannelConsumeN
 
 // GlobalVersioner see https://stackoverflow.com/questions/73941723/what-is-a-good-way-pattern-to-use-temporal-cadence-versioning-api
 type GlobalVersioner struct {
@@ -101,6 +106,10 @@ func (p *GlobalVersioner) IsAfterVersionOfSyncUpdateRPCUseLocalActivity() bool {
 
 func (p *GlobalVersioner) IsAfterVersionOfWaitingCommandThreads() bool {
 	return p.version >= StartingVersionWaitingCommandThreads
+}
+
+func (p *GlobalVersioner) IsAfterVersionOfChannelConsumeN() bool {
+	return p.version >= StartingVersionChannelConsumeN
 }
 
 // methods checking feature/functionality availability

@@ -23,6 +23,10 @@ type InterStateChannelResult struct {
 	RequestStatus ChannelRequestStatus `json:"requestStatus"`
 	ChannelName   string               `json:"channelName"`
 	Value         *EncodedObject       `json:"value,omitempty"`
+	// Values contains all consumed messages when AtLeast/AtMost is used.
+	// For single-message commands, this contains the same single value.
+	// NOTE: This field requires a corresponding update to the iwf-idl OpenAPI spec.
+	Values []EncodedObject `json:"values,omitempty"`
 }
 
 // NewInterStateChannelResult instantiates a new InterStateChannelResult object
@@ -164,6 +168,9 @@ func (o InterStateChannelResult) ToMap() (map[string]interface{}, error) {
 	toSerialize["channelName"] = o.ChannelName
 	if !IsNil(o.Value) {
 		toSerialize["value"] = o.Value
+	}
+	if len(o.Values) > 0 {
+		toSerialize["values"] = o.Values
 	}
 	return toSerialize, nil
 }

@@ -575,6 +575,7 @@ func processStateExecution(
 	completedTimerCmds := map[int]service.InternalTimerStatus{}
 	completedSignalCmds := map[int]*iwfidl.EncodedObject{}
 	completedInterStateChannelCmds := map[int]*iwfidl.EncodedObject{}
+	completedInterStateChannelMultiCmds := map[int][]*iwfidl.EncodedObject{}
 
 	state := stateReq.GetStateMovement()
 	isResumeFromContinueAsNew := stateReq.IsResumeRequest()
@@ -592,6 +593,9 @@ func processStateExecution(
 		commandReq = resumeStateRequest.CommandRequest
 		completedCmds := resumeStateRequest.StateExecutionCompletedCommands
 		completedTimerCmds, completedSignalCmds, completedInterStateChannelCmds = completedCmds.CompletedTimerCommands, completedCmds.CompletedSignalCommands, completedCmds.CompletedInterStateChannelCommands
+		if completedCmds.CompletedInterStateChannelMultiCmds != nil {
+			completedInterStateChannelMultiCmds = completedCmds.CompletedInterStateChannelMultiCmds
+		}
 	} else {
 		if state.StateOptions != nil {
 			startApiTimeout := compatibility.GetStartApiTimeoutSeconds(state.StateOptions)
@@ -758,6 +762,10 @@ func processStateExecution(
 				// skip completed interStateChannelCommand(from continueAsNew)
 				continue
 			}
+			if _, ok := completedInterStateChannelMultiCmds[idx]; ok {
+				// skip completed multi-message interStateChannelCommand(from continueAsNew)
+				continue
+			}
 			cmdCtx := provider.ExtendContextWithValue(ctx, "cmd", cmd)
 			cmdCtx = provider.ExtendContextWithValue(cmdCtx, "idx", idx)
 			//Process interstate channel command in a new thread.
@@ -773,9 +781,11 @@ func processStateExecution(
 					panic("critical code bug")
 				}
 
+				atLeast, atMost := getChannelCommandLimits(cmd, globalVersioner)
+
 				received := false
 				_ = provider.Await(ctx, func() bool {
-					received = interStateChannel.HasData(cmd.ChannelName)
+					received = interStateChannel.HasAtLeastN(cmd.ChannelName, atLeast)
 					// Note that commandReqDoneOrCanceled is needed for two cases:
 					// 1. will be true when trigger type of the commandReq is completed(e.g. AnyCommandCompleted) so we don't need to wait for all commands. Returning the thread to avoid thread leakage.
 					// 2. will be true to cancel the wait for unblocking continueAsNew(continueAsNew will wait for all threads to complete)
@@ -783,7 +793,12 @@ func processStateExecution(
 				})
 
 				if received {
-					completedInterStateChannelCmds[idx] = interStateChannel.Retrieve(cmd.ChannelName)
+					if atMost > 1 || atLeast == 0 {
+						values := interStateChannel.RetrieveUpToN(cmd.ChannelName, atMost)
+						completedInterStateChannelMultiCmds[idx] = values
+					} else {
+						completedInterStateChannelCmds[idx] = interStateChannel.Retrieve(cmd.ChannelName)
+					}
 				}
 				waitForThreads[threadName] = true
 			})
@@ -796,11 +811,12 @@ func processStateExecution(
 	continueAsNewer.AddPotentialStateExecutionToResume(
 		stateExeId, state, stateExecutionLocal, commandReq,
 		completedTimerCmds, completedSignalCmds, completedInterStateChannelCmds,
+		completedInterStateChannelMultiCmds,
 	)
 
 	// Wait for decider trigger (ANY/ALL command completed) OR continue-as-new threshold
 	_ = provider.Await(ctx, func() bool {
-		return IsDeciderTriggerConditionMet(commandReq, completedTimerCmds, completedSignalCmds, completedInterStateChannelCmds) || continueAsNewCounter.IsThresholdMet()
+		return IsDeciderTriggerConditionMet(commandReq, completedTimerCmds, completedSignalCmds, completedInterStateChannelCmds, completedInterStateChannelMultiCmds) || continueAsNewCounter.IsThresholdMet()
 	})
 
 	//This variable tells all command threads to stop waiting and exit, even if their specific command has not been completed.
@@ -826,7 +842,7 @@ func processStateExecution(
 		}
 	}
 
-	if !IsDeciderTriggerConditionMet(commandReq, completedTimerCmds, completedSignalCmds, completedInterStateChannelCmds) {
+	if !IsDeciderTriggerConditionMet(commandReq, completedTimerCmds, completedSignalCmds, completedInterStateChannelCmds, completedInterStateChannelMultiCmds) {
 		// this means continueAsNewCounter.IsThresholdMet == true
 		// not using continueAsNewCounter.IsThresholdMet because deciderTrigger is higher prioritized
 		// it won't continueAsNew in those cases 1. start Api fail with proceed policy, 2. empty commands, 3. both commands and continueAsNew are met
@@ -878,8 +894,27 @@ func processStateExecution(
 		var interStateChannelResults []iwfidl.InterStateChannelResult
 		for idx, cmd := range commandReq.GetInterStateChannelCommands() {
 			status := iwfidl.RECEIVED
-			result, completed := completedInterStateChannelCmds[idx]
-			if !completed {
+			var firstValue *iwfidl.EncodedObject
+			var allValues []iwfidl.EncodedObject
+
+			multiResult, multiCompleted := completedInterStateChannelMultiCmds[idx]
+			singleResult, singleCompleted := completedInterStateChannelCmds[idx]
+
+			if multiCompleted {
+				if len(multiResult) > 0 {
+					firstValue = multiResult[0]
+				}
+				for _, v := range multiResult {
+					if v != nil {
+						allValues = append(allValues, *v)
+					}
+				}
+			} else if singleCompleted {
+				firstValue = singleResult
+				if singleResult != nil {
+					allValues = append(allValues, *singleResult)
+				}
+			} else {
 				status = iwfidl.WAITING
 			}
 
@@ -887,7 +922,8 @@ func processStateExecution(
 				CommandId:     cmd.GetCommandId(),
 				ChannelName:   cmd.ChannelName,
 				RequestStatus: status,
-				Value:         result,
+				Value:         firstValue,
+				Values:        allValues,
 			})
 		}
 		commandRes.SetInterStateChannelResults(interStateChannelResults)
@@ -1090,6 +1126,42 @@ func convertStateApiActivityError(provider interfaces.WorkflowProvider, err erro
 
 func getCommandThreadName(prefix string, stateExecId, cmdId string, idx int) string {
 	return fmt.Sprintf("%v-%v-%v-%v", prefix, stateExecId, cmdId, idx)
+}
+
+// getChannelCommandLimits returns the effective AtLeast and AtMost values for a channel command.
+// For old workflow versions or commands without AtLeast/AtMost, defaults to (1, 1) for backward compat.
+func getChannelCommandLimits(cmd iwfidl.InterStateChannelCommand, globalVersioner *GlobalVersioner) (atLeast int, atMost int) {
+	if !globalVersioner.IsAfterVersionOfChannelConsumeN() {
+		return 1, 1
+	}
+
+	atLeast = 1
+	atMost = 1
+
+	if cmd.HasAtLeast() {
+		atLeast = int(cmd.GetAtLeast())
+	}
+	if cmd.HasAtMost() {
+		atMost = int(cmd.GetAtMost())
+	}
+
+	// If only AtLeast is set, AtMost defaults to max (consume up to all)
+	if cmd.HasAtLeast() && !cmd.HasAtMost() {
+		atMost = int(^uint(0) >> 1) // max int
+	}
+	// If only AtMost is set, AtLeast defaults to AtMost (exact count)
+	if !cmd.HasAtLeast() && cmd.HasAtMost() {
+		atLeast = atMost
+	}
+
+	if atLeast < 0 {
+		atLeast = 0
+	}
+	if atMost < atLeast {
+		atMost = atLeast
+	}
+
+	return atLeast, atMost
 }
 
 func createUserWorkflowError(provider interfaces.WorkflowProvider, message string) error {

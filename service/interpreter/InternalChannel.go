@@ -41,6 +41,15 @@ func (i *InternalChannel) HasData(channelName string) bool {
 	return len(l) > 0
 }
 
+func (i *InternalChannel) HasAtLeastN(channelName string, n int) bool {
+	l := i.receivedData[channelName]
+	return len(l) >= n
+}
+
+func (i *InternalChannel) Size(channelName string) int {
+	return len(i.receivedData[channelName])
+}
+
 func (i *InternalChannel) ProcessPublishing(publishes []iwfidl.InterStateChannelPublishing) {
 	for _, pub := range publishes {
 		i.receive(pub.ChannelName, pub.Value)
@@ -66,5 +75,27 @@ func (i *InternalChannel) Retrieve(channelName string) *iwfidl.EncodedObject {
 		i.receivedData[channelName] = l
 	}
 
+	return data
+}
+
+// RetrieveUpToN atomically retrieves up to n messages from the channel.
+// It consumes min(n, available) messages.
+func (i *InternalChannel) RetrieveUpToN(channelName string, n int) []*iwfidl.EncodedObject {
+	l := i.receivedData[channelName]
+	if len(l) == 0 {
+		return []*iwfidl.EncodedObject{}
+	}
+	count := n
+	if count > len(l) {
+		count = len(l)
+	}
+	data := make([]*iwfidl.EncodedObject, count)
+	copy(data, l[:count])
+	l = l[count:]
+	if len(l) == 0 {
+		delete(i.receivedData, channelName)
+	} else {
+		i.receivedData[channelName] = l
+	}
 	return data
 }

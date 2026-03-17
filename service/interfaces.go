@@ -160,6 +160,9 @@ type (
 		CompletedTimerCommands             map[int]InternalTimerStatus   `json:"completedTimerCommands"`
 		CompletedSignalCommands            map[int]*iwfidl.EncodedObject `json:"completedSignalCommands"`
 		CompletedInterStateChannelCommands map[int]*iwfidl.EncodedObject `json:"completedInterStateChannelCommands"`
+		// CompletedInterStateChannelMultiCmds stores multiple messages consumed by a single command
+		// when AtLeast/AtMost are set. Keyed by command index.
+		CompletedInterStateChannelMultiCmds map[int][]*iwfidl.EncodedObject `json:"completedInterStateChannelMultiCmds,omitempty"`
 	}
 
 	StaleSkipTimerSignal struct {
